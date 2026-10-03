@@ -34,12 +34,16 @@ flowchart LR
 
 ```
 ├── .github/workflows/test.yml   # CI 流水线
+├── mock_llm/                    # OpenAI 兼容的 mock 大模型（ai-gen-web 用）
 ├── pages/                       # Page Object
-├── scripts/publish-report.sh    # 报告发布与清理
+├── scripts/
+│   ├── publish-report.sh        # 报告发布与清理
+│   └── ai_gen_web/reset_env.py  # 重建 ai-gen-web 测试库、清空 Redis
 ├── tests/
 │   ├── api/                     # 接口测试（JSONPlaceholder）
-│   └── ui/                      # UI 测试（TodoMVC）
-└── utils/                       # HTTP 客户端、JSON Schema
+│   ├── ui/                      # UI 测试（TodoMVC）
+│   └── ai_gen_web/              # ai-gen-web 端到端测试（接口 + UI）
+└── utils/                       # HTTP 客户端、JSON Schema、ai-gen-web 工具
 ```
 
 ## 本地运行
@@ -49,7 +53,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
 
-pytest                       # 全部
+pytest tests/api tests/ui     # 本仓库自带的示例用例
 pytest -m api                # 只跑接口
 pytest -m ui --headed        # 只跑 UI，并显示浏览器
 pytest --alluredir=allure-results && allure serve allure-results   # 本地看报告
@@ -64,3 +68,14 @@ pytest --alluredir=allure-results && allure serve allure-results   # 本地看�
 5. 在 Job Summary 中输出用例统计和报告链接
 
 **安全：** 仓库公开，来自 fork 的 PR 不会在 self-hosted runner 上执行；runner 以无 sudo 权限的独立用户运行。
+
+## 被测项目：ai-gen-web
+
+[ai-gen-web](https://github.com/leorxx11/ai-gen-web)（Spring Boot + LangChain4j + Vue 的 AI 应用生成平台）每次 push 都会触发其仓库中的 `e2e.yml`，在同一台 runner 上：
+
+1. 构建后端 jar 与前端静态资源
+2. 重建 MySQL 测试库、清空 Redis（服务器上的容器，只监听 127.0.0.1）
+3. 启动 `mock_llm/`：按 OpenAI 协议流式返回固定的 `writeFile` 工具调用，生成一个最小 Vue 工程，让 AI 链路可重复验证、零费用
+4. 拉取本仓库，运行 `tests/ai_gen_web`，报告发布到 `ci.leorxx.xyz/reports/ai-gen-web/`
+
+覆盖范围：注册登录与登录态、接口鉴权（普通用户 / 未登录访问管理员接口）、用户与应用管理、分页与参数校验、SSE 流式输出格式、对话历史与游标分页、多轮对话上下文、模型失败分支、Vue 工程自动构建与预览、部署；UI 覆盖注册登录、创作到预览的完整流程、管理页权限。已知缺陷以 `xfail(strict=True)` 标记，修复后会转为失败提醒移除标记。

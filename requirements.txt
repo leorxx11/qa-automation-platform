@@ -3,3 +3,5 @@ requests>=2.31
 jsonschema>=4.20
 allure-pytest>=2.13
 pytest-playwright>=0.5
+pymysql>=1.1
+redis>=5.0

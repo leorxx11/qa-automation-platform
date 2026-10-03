@@ -43,7 +43,8 @@ jobs:
       - name: 运行测试
         id: tests
         continue-on-error: true
-        run: .venv/bin/pytest --alluredir=allure-results
+        # tests/ai_gen_web 依赖 ai-gen-web 的后端，由 ai-gen-web 仓库的流水线运行
+        run: .venv/bin/pytest tests/api tests/ui --alluredir=allure-results
 
       - name: 生成 Allure 报告
         if: always()
