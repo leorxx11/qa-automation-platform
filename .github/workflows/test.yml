@@ -1,0 +1,103 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支只保留最新一次运行
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPORT_ROOT: /srv/allure-reports
+  REPORT_BASE_URL: https://ci.leorxx.xyz/reports
+  KEEP_REPORTS: "20"
+
+jobs:
+  test:
+    # 公开仓库 + self-hosted runner：来自 fork 的 PR 一律不在本机执行，
+    # 防止外部代码在服务器上运行
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
+          # 浏览器缓存在 runner 用户目录，已存在时会跳过下载
+          .venv/bin/python -m playwright install chromium
+
+      - name: 运行测试
+        id: tests
+        continue-on-error: true
+        run: .venv/bin/pytest --alluredir=allure-results
+
+      - name: 生成 Allure 报告
+        if: always()
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # 带上上一次的历史数据，报告里才有趋势图
+          if [ -d "$REPORT_ROOT/latest/history" ]; then
+            cp -r "$REPORT_ROOT/latest/history" allure-results/history
+          fi
+
+          cat > allure-results/environment.properties <<EOF
+          Python=$(.venv/bin/python --version | cut -d' ' -f2)
+          Playwright=$(.venv/bin/python -m playwright --version | cut -d' ' -f2)
+          Runner=${{ runner.name }} (${{ runner.os }}/${{ runner.arch }})
+          Branch=${{ github.ref_name }}
+          Commit=${GITHUB_SHA::7}
+          EOF
+
+          cat > allure-results/executor.json <<EOF
+          {
+            "name": "GitHub Actions",
+            "type": "github",
+            "url": "${{ github.server_url }}/${{ github.repository }}",
+            "buildOrder": ${{ github.run_number }},
+            "buildName": "${{ github.workflow }} #${{ github.run_number }}",
+            "buildUrl": "${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID",
+            "reportUrl": "$REPORT_BASE_URL/$RUN_ID/",
+            "reportName": "${{ github.repository }}"
+          }
+          EOF
+
+          allure generate allure-results -o allure-report --clean
+
+      - name: 发布报告
+        if: always()
+        run: bash scripts/publish-report.sh allure-report "${{ github.run_id }}"
+
+      - name: 输出报告链接
+        if: always()
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          s = json.load(open("allure-report/widgets/summary.json"))
+          st, t = s["statistic"], s["time"]
+          url = f'{os.environ["REPORT_BASE_URL"]}/{os.environ["GITHUB_RUN_ID"]}/'
+          print("## 🧪 测试结果\n")
+          print("| 总数 | ✅ 通过 | ❌ 失败 | 💥 异常 | ⏭ 跳过 | 耗时 |")
+          print("|---|---|---|---|---|---|")
+          print(f'| {st["total"]} | {st["passed"]} | {st["failed"]} | {st["broken"]} | {st["skipped"]} | {t["duration"] / 1000:.1f}s |')
+          print(f"\n📊 **[查看 Allure 报告]({url})**　·　[最新报告]({os.environ['REPORT_BASE_URL']}/latest/)")
+          print("\n> 报告站启用了 basic auth")
+          EOF
+
+      - name: 测试失败时标记任务失败
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
