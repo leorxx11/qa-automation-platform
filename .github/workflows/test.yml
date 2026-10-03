@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REPORT_ROOT: /srv/allure-reports
-  REPORT_BASE_URL: https://ci.leorxx.xyz/reports
+  REPORT_ROOT: /srv/allure-reports/qa-automation-platform
+  REPORT_BASE_URL: https://ci.leorxx.xyz/reports/qa-automation-platform
   KEEP_REPORTS: "20"
 
 jobs:
