@@ -8,6 +8,9 @@ from utils.schemas import AIGEN_APP_VO_SCHEMA, aigen_page_schema
 pytestmark = [pytest.mark.api, allure.epic("ai-gen-web 接口"), allure.feature("应用管理")]
 
 GOOD_APP_PRIORITY = 99
+# 与 ai-gen-web 的 AppController / RedisCacheManagerConfig 保持一致
+GOOD_APP_CACHE = "good_app_page"
+GOOD_APP_CACHE_TTL = 300
 
 
 def my_apps(client: AiGenClient, **query) -> dict:
@@ -105,9 +108,9 @@ def test_delete_app_permissions(user: AiGenClient, other_user: AiGenClient, admi
 
 
 @allure.story("精选应用")
-@allure.title("管理员设为精选后，未登录用户可在精选列表看到")
+@allure.title("管理员设为精选后，缓存过期前列表不变，过期后未登录用户可在精选列表看到")
 @allure.severity(allure.severity_level.CRITICAL)
-def test_good_apps(admin: AiGenClient, anon: AiGenClient, app_id):
+def test_good_apps(admin: AiGenClient, anon: AiGenClient, app_id, redis_db):
     def good_ids() -> set[str]:
         page = ok(anon.post("/app/good/list/page/vo", json={"pageNum": 1, "pageSize": 20}))
         return {r["id"] for r in page["records"]}
@@ -115,6 +118,14 @@ def test_good_apps(admin: AiGenClient, anon: AiGenClient, app_id):
     assert app_id not in good_ids()
     ok(admin.post("/app/admin/update", json={"id": app_id, "priority": GOOD_APP_PRIORITY, "appName": "精选作品"}))
 
+    with allure.step("精选列表走 Redis 缓存（5 分钟），设为精选后仍返回旧结果"):
+        keys = list(redis_db.scan_iter(f"{GOOD_APP_CACHE}::*"))
+        assert keys, "精选列表没有写入缓存"
+        assert all(0 < redis_db.ttl(k) <= GOOD_APP_CACHE_TTL for k in keys)
+        assert app_id not in good_ids()
+
+    with allure.step("删除缓存，模拟过期"):
+        redis_db.delete(*keys)
     assert app_id in good_ids()
     app = ok(admin.get("/app/admin/get/vo", params={"id": app_id}))
     assert app["priority"] == GOOD_APP_PRIORITY

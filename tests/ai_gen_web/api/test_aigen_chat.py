@@ -107,8 +107,7 @@ def test_history_visibility(user: AiGenClient, other_user: AiGenClient, admin: A
 def test_chat_other_users_app(user: AiGenClient, other_user: AiGenClient, app_id, mock_llm_requests):
     before = len(mock_llm_requests())
     result = other_user.chat(app_id, "改一下别人的应用")
-    assert result.status_code != 200 or json.loads(result.raw)["code"] == 40101
-    assert ("done", "") not in result.events
+    result.business_error(40101)
     assert history_records(user, app_id) == []
     assert len(mock_llm_requests()) == before
 
@@ -117,21 +116,15 @@ def test_chat_other_users_app(user: AiGenClient, other_user: AiGenClient, app_id
 @allure.title("未登录不能对话")
 def test_chat_requires_login(anon: AiGenClient, app_id):
     result = anon.chat(app_id, "做一个网站")
-    assert result.status_code != 200 or json.loads(result.raw)["code"] == 40100
-    assert ("done", "") not in result.events
+    result.business_error(40100)
 
 
 @allure.story("流式生成")
-@allure.title("SSE 接口出错时，浏览器能拿到业务错误码")
-@pytest.mark.xfail(
-    strict=True,
-    reason="已知缺陷：EventSource 只接受 text/event-stream，BaseResponse 无法按该类型输出，"
-    "后端返回 HTTP 500 空响应，前端拿不到 40100/40101 等错误信息",
-)
+@allure.title("SSE 接口出错时，浏览器能通过 business-error 事件拿到业务错误码和提示")
 def test_chat_error_is_readable(anon: AiGenClient, app_id):
-    result = anon.chat(app_id, "做一个网站")
-    assert result.status_code == 200
-    assert json.loads(result.raw)["code"] == 40100
+    # EventSource 只接受 text/event-stream，错误必须以 SSE 事件返回，不能是 BaseResponse JSON
+    body = anon.chat(app_id, "做一个网站").business_error(40100)
+    assert body["message"] == "未登录"
 
 
 @allure.story("流式生成")
@@ -172,7 +165,8 @@ def test_preview_and_deploy(user: AiGenClient, anon: AiGenClient, app_id):
     assert '<div id="app"></div>' in resp.text
 
     url = ok(user.post("/app/deploy", json={"appId": app_id}))
-    key = re.fullmatch(r"http://localhost:8080/([0-9a-zA-Z]{6})", url).group(1)
+    # 部署地址为 {code.deploy-host}/{deployKey}/，CI 未配置 deploy-host，取默认值
+    key = re.fullmatch(r"http://localhost:8080/([0-9a-zA-Z]{6})/", url).group(1)
     app = ok(user.get("/app/get/vo", params={"id": app_id}))
     assert app["deployKey"] == key
     assert app["deployedTime"] is not None
