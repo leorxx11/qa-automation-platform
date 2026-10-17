@@ -4,6 +4,8 @@
 - 每轮对话按顺序发起 writeFile 工具调用，每次写一个文件，写出一个最小的 Vite + Vue 工程
 - 文件写完后返回一段结束语
 - 用户消息包含 MOCK_ERROR 时返回 500，用于验证失败分支
+- 非流式请求返回标准的 chat.completion：创建应用时的智能路由固定选 VUE_PROJECT，
+  与上面写出的 Vue 工程一致；工作流里的代码质检、图片规划返回能解析的最小 JSON
 
 调试接口：
 - GET  /__requests  返回收到的全部请求体
@@ -17,6 +19,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 
 FINAL_TEXT = "项目已生成完毕：包含入口页面、根组件与 Vite 配置。"
+
+# 非流式请求按系统提示词识别调用方，返回对应的固定答案
+STRUCTURED_REPLIES = [
+    ("代码生成方案路由器", "VUE_PROJECT"),
+    ("代码质量检查专家", json.dumps({"isValid": True, "errors": [], "suggestions": []})),
+    ("图片收集规划师", json.dumps(
+        {"contentImageTasks": [], "illustrationTasks": [], "diagramTasks": [], "logoTasks": []})),
+]
 
 PROJECT_FILES = [
     (
@@ -97,12 +107,45 @@ def _text_chunks(text: str) -> list[dict]:
     return chunks
 
 
-def _plan_response(messages: list[dict]) -> list[dict]:
+def _next_file(messages: list[dict]) -> tuple[str, str] | None:
+    """本轮还没写的下一个文件，全部写完返回 None。"""
     last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
     written = sum(1 for m in messages[last_user:] if m["role"] == "tool")
-    if written < len(PROJECT_FILES):
-        return _tool_call_chunks(*PROJECT_FILES[written])
+    return PROJECT_FILES[written] if written < len(PROJECT_FILES) else None
+
+
+def _plan_response(messages: list[dict]) -> list[dict]:
+    next_file = _next_file(messages)
+    if next_file:
+        return _tool_call_chunks(*next_file)
     return _text_chunks(FINAL_TEXT)
+
+
+def _completion(body: dict) -> dict:
+    """非流式请求的完整响应。"""
+    messages = body["messages"]
+    system = "".join(_user_text(m) for m in messages if m["role"] == "system")
+    reply = next((text for marker, text in STRUCTURED_REPLIES if marker in system), None)
+    next_file = None if reply is not None or not body.get("tools") else _next_file(messages)
+    if next_file:
+        path, content = next_file
+        arguments = json.dumps({"relativeFilePath": path, "content": content}, ensure_ascii=False)
+        message = {"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+             "function": {"name": "writeFile", "arguments": arguments}},
+        ]}
+        finish_reason = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": FINAL_TEXT if reply is None else reply}
+        finish_reason = "stop"
+    return {
+        "id": "chatcmpl-mock",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "mock",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+    }
 
 
 def _user_text(message: dict) -> str:
@@ -154,10 +197,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": {"message": "mock upstream failure", "type": "server_error"}})
             return
 
-        chunks = _plan_response(messages)
         if not body.get("stream"):
-            self._send_json(400, {"error": {"message": "mock only supports stream=true"}})
+            self._send_json(200, _completion(body))
             return
+        chunks = _plan_response(messages)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
