@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import allure
 import pymysql
+import redis
 import requests
 
 from utils.api_client import ApiClient
@@ -35,6 +36,14 @@ def db_connect() -> pymysql.Connection:
     )
 
 
+def redis_connect() -> redis.Redis:
+    return redis.Redis(
+        host=os.getenv("AIGEN_REDIS_HOST", "127.0.0.1"),
+        port=int(os.getenv("AIGEN_REDIS_PORT", "6379")),
+        decode_responses=True,
+    )
+
+
 @dataclass
 class SseResult:
     status_code: int
@@ -45,6 +54,15 @@ class SseResult:
     @property
     def content(self) -> str:
         return "".join(json.loads(data)["d"] for event, data in self.events if event == "message")
+
+    def business_error(self, code: int) -> dict:
+        """进入流之前被拒绝（鉴权、限流、护轨）：只有一个 business-error 事件和结束的 done 事件。"""
+        assert self.status_code == 200, self.raw
+        assert self.content_type.startswith("text/event-stream"), self.content_type
+        assert [event for event, _ in self.events] == ["business-error", "done"], self.raw
+        body = json.loads(self.events[0][1])
+        assert body["error"] is True and body["code"] == code, body
+        return body
 
 
 def parse_sse(text: str) -> list[tuple[str, str]]:

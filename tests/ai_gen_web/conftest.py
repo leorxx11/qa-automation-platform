@@ -3,7 +3,7 @@ from collections.abc import Callable
 import pytest
 import requests
 
-from utils.aigen import MOCK_LLM_URL, AiGenClient, db_connect, ok, unique_account
+from utils.aigen import MOCK_LLM_URL, AiGenClient, db_connect, ok, redis_connect, unique_account
 
 
 def pytest_collection_modifyitems(items):
@@ -15,6 +15,13 @@ def pytest_collection_modifyitems(items):
 @pytest.fixture(scope="session")
 def db():
     conn = db_connect()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture(scope="session")
+def redis_db():
+    conn = redis_connect()
     yield conn
     conn.close()
 
